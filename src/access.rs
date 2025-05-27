@@ -25,6 +25,8 @@ use crate::issue_model::{Issue, JqlResults};
 // This string comes directly after the host in the URL.
 const REST_PREFIX: &str = "rest/api/2";
 
+const MAX_KEYS_PER_URL_CHUNK: usize = 50;
+
 /// Configuration and credentials to access a Jira instance.
 pub struct JiraInstance {
     pub host: String,
@@ -181,33 +183,47 @@ impl JiraInstance {
     ///
     /// If the list of keys is empty, returns an empty list back with no errors.
     pub async fn issues(&self, keys: &[&str]) -> Result<Vec<Issue>, JiraQueryError> {
-        // If the user specifies no keys, skip network requests and return no bugs.
-        // Returning an error could also be valid, but I believe that this behavior
-        // is less surprising and more practical.
         if keys.is_empty() {
             return Ok(Vec::new());
         }
 
-        let method = Method::Keys(keys);
+        // Handle Pagination::MaxResults(0) early to fetch nothing.
+        if let Pagination::MaxResults(0) = self.pagination {
+            return Ok(Vec::new());
+        }
 
-        // If Pagination is set to ChunkSize, split the issue keys into chunk by chunk size
-        // and request each chunk separately.
-        if let Pagination::ChunkSize(chunk_size) = self.pagination {
-            self.paginated_issues(&method, chunk_size).await
-        // If Pagination is not set to ChunkSize, use a single chunk request for all issues.
-        } else {
-            let issues = self.chunk_of_issues(&method, 0).await?;
+        let max_keys_per_url_request = 50;
 
-            // If the resulting list is empty, return an error.
-            // TODO: The REST parsing above already results in an error if the results are empty.
-            // Try to catch the error there.
-            if issues.is_empty() {
-                Err(JiraQueryError::NoIssues)
-            } else {
-                Ok(issues)
+        let mut all_collected_issues: Vec<Issue> = Vec::new();
+
+        for key_chunk in keys.chunks(max_keys_per_url_request) {
+            if key_chunk.is_empty() { // Should not happen if `keys` is not empty initially
+                continue;
             }
+
+            let method = Method::Keys(key_chunk);
+
+            let mut issues_from_this_chunk = {
+                // If Pagination is set to ChunkSize, call paginated_issues.
+                if let Pagination::ChunkSize(chunk_size) = self.pagination {
+                    self.paginated_issues(&method, chunk_size.max(1)).await?
+                }
+                // If Pagination is not set to ChunkSize, use a single chunk request for the issues in this key_chunk.
+                else {
+                    let issues_val = self.chunk_of_issues(&method, 0).await?;
+                    issues_val
+                }
+            };
+            all_collected_issues.append(&mut issues_from_this_chunk);
+        }
+
+        if !keys.is_empty() && all_collected_issues.is_empty() {
+            Err(JiraQueryError::NoIssues)
+        } else {
+            Ok(all_collected_issues)
         }
     }
+
 
     /// Download all issues specified in the request as a series of chunks or pages.
     /// The request controls whether the download works with IDs or JQL.
