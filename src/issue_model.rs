@@ -89,6 +89,7 @@ pub struct Fields {
     pub issuelinks: Vec<IssueLink>,
     pub votes: Votes,
     pub parent: Option<CondensedIssue>,
+    #[serde(default)]
     pub subtasks: Vec<CondensedIssue>,
     pub environment: Option<String>,
     pub security: Option<Security>,

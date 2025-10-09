@@ -33,6 +33,7 @@ pub struct JiraInstance {
     pub auth: Auth,
     pub pagination: Pagination,
     client: reqwest::Client,
+    is_cloud: bool,
 }
 
 /// The authentication method used to contact Jira.
@@ -79,11 +80,28 @@ enum Method<'a> {
 }
 
 impl<'a> Method<'a> {
-    fn url_fragment(&self) -> String {
+    fn url_fragment(&self, is_cloud: bool) -> String {
         match self {
             Self::Key(id) => format!("issue/{id}"),
-            Self::Keys(ids) => format!("search?jql=id%20in%20({})", ids.join(",")),
-            Self::Search(query) => format!("search?jql={query}"),
+            Self::Keys(ids) => {
+                let jql = format!("id%20in%20({})", ids.join(","));
+                if is_cloud {
+                    // The cloud-specific path
+                    format!("search/jql?jql={jql}")
+                } else {
+                    // The local-specific
+                    format!("search?jql={jql}")
+                }
+            }
+            Self::Search(query) => {
+                if is_cloud {
+                    // The cloud-specific path
+                    format!("search/jql?jql={query}")
+                } else {
+                    // The local-specific path
+                    format!("search?jql={query}")
+                }
+            }
         }
     }
 }
@@ -101,7 +119,14 @@ impl JiraInstance {
             client,
             auth: Auth::default(),
             pagination: Pagination::default(),
+            is_cloud: false,
         })
+    }
+
+    #[must_use]
+    pub fn for_cloud(mut self) -> Self {
+        self.is_cloud = true;
+        self
     }
 
     /// Set the authentication method of this `JiraInstance`.
@@ -143,13 +168,21 @@ impl JiraInstance {
             Method::Keys(_) | Method::Search(_) => format!("&startAt={start_at}"),
         };
 
+        // For search-based methods, explicitly request all fields to ensure
+        // the response contains the data needed for deserialization.
+        let fields_param = match method {
+            Method::Key(_) => String::new(),
+            Method::Keys(_) | Method::Search(_) => "&fields=*all".to_string(),
+        };
+
         format!(
-            "{}/{}/{}{}{}",
+            "{}/{}/{}{}{}{}",
             self.host,
             REST_PREFIX,
-            method.url_fragment(),
+            method.url_fragment(self.is_cloud),
             max_results,
             start_at,
+            fields_param
         )
     }
 
@@ -187,34 +220,23 @@ impl JiraInstance {
             return Ok(Vec::new());
         }
 
-        // Handle Pagination::MaxResults(0) early to fetch nothing.
-        if let Pagination::MaxResults(0) = self.pagination {
-            return Ok(Vec::new());
-        }
+        let mut all_collected_issues: Vec<Issue> = Vec::with_capacity(keys.len());
 
-        let max_keys_per_url_request = 50;
-
-        let mut all_collected_issues: Vec<Issue> = Vec::new();
-
-        for key_chunk in keys.chunks(max_keys_per_url_request) {
-            if key_chunk.is_empty() { // Should not happen if `keys` is not empty initially
+        // Chunk keys into batches to avoid creating a URL that is too long.
+        for key_chunk in keys.chunks(20) {
+            if key_chunk.is_empty() {
                 continue;
             }
 
-            let method = Method::Keys(key_chunk);
+            log::info!(
+                "Fetching batch of {} keys: {}",
+                key_chunk.len(),
+                key_chunk.join(", ")
+            );
 
-            let mut issues_from_this_chunk = {
-                // If Pagination is set to ChunkSize, call paginated_issues.
-                if let Pagination::ChunkSize(chunk_size) = self.pagination {
-                    self.paginated_issues(&method, chunk_size.max(1)).await?
-                }
-                // If Pagination is not set to ChunkSize, use a single chunk request for the issues in this key_chunk.
-                else {
-                    let issues_val = self.chunk_of_issues(&method, 0).await?;
-                    issues_val
-                }
-            };
-            all_collected_issues.append(&mut issues_from_this_chunk);
+            let method = Method::Keys(key_chunk);
+            let mut issues_from_chunk = self.chunk_of_issues(&method, 0).await?;
+            all_collected_issues.append(&mut issues_from_chunk);
         }
 
         if !keys.is_empty() && all_collected_issues.is_empty() {
@@ -223,7 +245,6 @@ impl JiraInstance {
             Ok(all_collected_issues)
         }
     }
-
 
     /// Download all issues specified in the request as a series of chunks or pages.
     /// The request controls whether the download works with IDs or JQL.
