@@ -228,7 +228,7 @@ impl JiraInstance {
                 continue;
             }
 
-            log::info!(
+            log::debug!(
                 "Fetching batch of {} keys: {}",
                 key_chunk.len(),
                 key_chunk.join(", ")
