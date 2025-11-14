@@ -1,7 +1,7 @@
 [package]
 name = "jira_query"
 authors = ["Marek Suchánek <marek.suchanek@protonmail.com>", "Marc Mühlfeld <mmuehlfeld@redhat.com>"]
-version = "1.7.0"
+version = "1.7.1"
 edition = "2021"
 # Check the Rust version using `cargo msrv verify`.
 rust-version = "1.81"
