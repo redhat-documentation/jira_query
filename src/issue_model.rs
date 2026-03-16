@@ -30,6 +30,22 @@ pub struct JqlResults {
     pub extra: Value,
 }
 
+/// The response from Jira Cloud's enhanced search endpoint (`/search/jql`),
+/// which uses cursor-based pagination with `nextPageToken` instead of offset-based
+/// `startAt`/`total` pagination.
+#[derive(Clone, Debug, Deserialize)]
+pub struct CloudSearchResults {
+    pub issues: Vec<Issue>,
+    /// The token for the next page. If absent, this is the last page.
+    #[serde(rename = "nextPageToken")]
+    pub next_page_token: Option<String>,
+    /// Whether this is the last page of results.
+    #[serde(rename = "isLast")]
+    pub is_last: Option<bool>,
+    #[serde(flatten)]
+    pub extra: Value,
+}
+
 /// A single Jira issue with all its fields.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Issue {
