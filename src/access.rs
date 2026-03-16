@@ -19,7 +19,7 @@ limitations under the License.
 // * https://docs.atlassian.com/jira-software/REST/latest/
 
 use crate::errors::JiraQueryError;
-use crate::issue_model::{Issue, JqlResults};
+use crate::issue_model::{CloudSearchResults, Issue, JqlResults};
 
 // The prefix of every subsequent REST request.
 // This string comes directly after the host in the URL.
@@ -186,6 +186,37 @@ impl JiraInstance {
         )
     }
 
+    /// Build a URL for Jira Cloud's enhanced search endpoint (`/search/jql`),
+    /// which uses cursor-based pagination with `nextPageToken`.
+    #[must_use]
+    fn cloud_path(&self, method: &Method, next_page_token: Option<&str>) -> String {
+        let max_results = match self.pagination {
+            Pagination::Default => String::new(),
+            Pagination::MaxResults(n) | Pagination::ChunkSize(n) => format!("&maxResults={n}"),
+        };
+
+        let token_param = match next_page_token {
+            Some(token) => format!("&nextPageToken={token}"),
+            None => String::new(),
+        };
+
+        // For search-based methods, explicitly request all fields.
+        let fields_param = match method {
+            Method::Key(_) => String::new(),
+            Method::Keys(_) | Method::Search(_) => "&fields=*all".to_string(),
+        };
+
+        format!(
+            "{}/{}/{}{}{}{}",
+            self.host,
+            REST_PREFIX,
+            method.url_fragment(self.is_cloud),
+            max_results,
+            token_param,
+            fields_param
+        )
+    }
+
     /// Download the specified URL using the configured authentication.
     async fn authenticated_get(&self, url: &str) -> Result<reqwest::Response, reqwest::Error> {
         let request_builder = self.client.get(url);
@@ -235,8 +266,16 @@ impl JiraInstance {
             );
 
             let method = Method::Keys(key_chunk);
-            let mut issues_from_chunk = self.chunk_of_issues(&method, 0).await?;
-            all_collected_issues.append(&mut issues_from_chunk);
+
+            // For Cloud, use cursor-based pagination even for ID-based searches,
+            // because the search/jql endpoint always requires it.
+            if self.is_cloud {
+                let mut issues_from_chunk = self.cloud_paginated_issues(&method).await?;
+                all_collected_issues.append(&mut issues_from_chunk);
+            } else {
+                let mut issues_from_chunk = self.chunk_of_issues(&method, 0).await?;
+                all_collected_issues.append(&mut issues_from_chunk);
+            }
         }
 
         if !keys.is_empty() && all_collected_issues.is_empty() {
@@ -279,6 +318,52 @@ impl JiraInstance {
         Ok(all_issues)
     }
 
+    /// Download all issues using Jira Cloud's cursor-based pagination.
+    ///
+    /// The Cloud `search/jql` endpoint uses `nextPageToken` for pagination
+    /// instead of offset-based `startAt`. Each response includes a `nextPageToken`
+    /// field; when it's absent (or `isLast` is true), all pages have been fetched.
+    async fn cloud_paginated_issues(
+        &self,
+        method: &Method<'_>,
+    ) -> Result<Vec<Issue>, JiraQueryError> {
+        let mut all_issues = Vec::new();
+        let mut next_page_token: Option<String> = None;
+
+        loop {
+            let url = self.cloud_path(method, next_page_token.as_deref());
+
+            log::debug!("Cloud paginated request: {}", url);
+
+            let response = self.authenticated_get(&url).await?;
+            let results = response.json::<CloudSearchResults>().await?;
+
+            log::debug!("{:#?}", results);
+
+            let page_size = results.issues.len();
+            all_issues.extend(results.issues);
+
+            // Stop if: no issues returned, or this is the last page, or no next token.
+            if page_size == 0 {
+                break;
+            }
+            if results.is_last.unwrap_or(false) {
+                break;
+            }
+            match results.next_page_token {
+                Some(token) if !token.is_empty() => {
+                    next_page_token = Some(token);
+                }
+                _ => {
+                    // No next page token means this is the last page.
+                    break;
+                }
+            }
+        }
+
+        Ok(all_issues)
+    }
+
     /// Download a specific list (chunk) of issues.
     /// Reused elsewhere as a building block of different pagination methods.
     async fn chunk_of_issues(
@@ -305,12 +390,16 @@ impl JiraInstance {
     pub async fn search(&self, query: &str) -> Result<Vec<Issue>, JiraQueryError> {
         let method = Method::Search(query);
 
-        // If Pagination is set to ChunkSize, split the issue keys into chunk by chunk size
-        // and request each chunk separately.
-        if let Pagination::ChunkSize(chunk_size) = self.pagination {
+        if self.is_cloud {
+            // For Cloud, always use cursor-based pagination regardless of the
+            // Pagination setting, because the search/jql endpoint requires it.
+            self.cloud_paginated_issues(&method).await
+        } else if let Pagination::ChunkSize(chunk_size) = self.pagination {
+            // If Pagination is set to ChunkSize, split the issue keys into chunk by chunk size
+            // and request each chunk separately.
             self.paginated_issues(&method, chunk_size).await
-        // If Pagination is not set to ChunkSize, use a single chunk request for all issues.
         } else {
+            // If Pagination is not set to ChunkSize, use a single chunk request for all issues.
             let issues = self.chunk_of_issues(&method, 0).await?;
 
             Ok(issues)
