@@ -296,7 +296,7 @@ pub struct Comment {
     pub created: DateTime<Utc>,
     pub id: String,
     #[serde(rename = "updateAuthor")]
-    pub update_author: User,
+    pub update_author: Option<User>,
     pub updated: DateTime<Utc>,
     pub visibility: Option<Visibility>,
     #[serde(rename = "self")]
