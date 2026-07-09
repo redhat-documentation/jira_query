@@ -27,6 +27,7 @@ use serde_json::Value;
 pub struct JqlResults {
     pub issues: Vec<Issue>,
     #[serde(flatten)]
+    #[allow(dead_code)]
     pub extra: Value,
 }
 
@@ -43,6 +44,7 @@ pub struct CloudSearchResults {
     #[serde(rename = "isLast")]
     pub is_last: Option<bool>,
     #[serde(flatten)]
+    #[allow(dead_code)]
     pub extra: Value,
 }
 

@@ -25,8 +25,6 @@ use crate::issue_model::{CloudSearchResults, Issue, JqlResults};
 // This string comes directly after the host in the URL.
 const REST_PREFIX: &str = "rest/api/2";
 
-const MAX_KEYS_PER_URL_CHUNK: usize = 50;
-
 /// Configuration and credentials to access a Jira instance.
 pub struct JiraInstance {
     pub host: String,
@@ -226,6 +224,23 @@ impl JiraInstance {
             Auth::Basic { user, password } => request_builder.basic_auth(user, Some(password)),
         };
         authenticated.send().await
+    }
+
+    /// Verify that the authentication credentials are valid by making a test API call.
+    /// Returns `Ok(())` if authentication succeeds, or an error if it fails.
+    pub async fn verify_authentication(&self) -> Result<(), JiraQueryError> {
+        let url = format!("{}/{}/myself", self.host, REST_PREFIX);
+
+        let response = self.authenticated_get(&url).await?;
+
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            Err(JiraQueryError::AuthenticationFailed {
+                status: response.status().as_u16(),
+                message: response.text().await.unwrap_or_else(|_| "Unknown error".to_string()),
+            })
+        }
     }
 
     // This method uses a separate implementation from `issues` because Jira provides a way

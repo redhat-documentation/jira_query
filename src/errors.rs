@@ -25,4 +25,6 @@ pub enum JiraQueryError {
     NoIssues,
     #[error("Error in accessing the Jira REST API.")]
     Request(#[from] reqwest::Error),
+    #[error("Authentication failed (HTTP {}): {}. Please check your JIRA_API_KEY and JIRA_USER_EMAIL environment variables and that the token specified in JIRA_API_KEY is owned by the account specified in JIRA_USER_EMAIL.", status, message)]
+    AuthenticationFailed { status: u16, message: String },
 }
